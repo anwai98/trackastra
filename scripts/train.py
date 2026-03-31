@@ -16,7 +16,6 @@ from timeit import default_timer
 
 import configargparse
 import git
-import humanize
 import lightning as pl
 import numpy as np
 import psutil
@@ -942,7 +941,7 @@ def train(args):
 
     model_lightning.to(device)
     num_params = sum(p.numel() for p in model.parameters() if p.requires_grad)
-    logging.info(f"Model has {humanize.intword(num_params)} parameters")
+    logging.info(f"Model has {num_params / 1e6:.1f}M parameters")
 
     if args.distributed:
         strategy = "ddp"
