@@ -607,6 +607,10 @@ def build_windows(
     progbar_class=tqdm,
     as_torch: bool = False,
 ) -> list[dict]:
+    if len(features) < 2:
+        raise ValueError(f"Need at least 2 frames for tracking, got {len(features)}.")
+    # Clamp window size to number of frames
+    window_size = min(window_size, len(features))
     windows = []
     for t1, t2 in progbar_class(
         zip(range(0, len(features)), range(window_size, len(features) + 1)),
