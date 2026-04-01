@@ -934,7 +934,8 @@ def train(args):
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
 
-    # if logdir already exists and --resume option is set, load the last checkpoint (eg when continuing training after crash)  # noqa
+    # if logdir already exists and --resume option is set,
+    # load the last checkpoint (eg when continuing training after crash)
     if logdir is not None and logdir.exists() and args.resume:
         logging.info("logdir exists, loading last state of model")
         fpath = model_lightning.checkpoint_path(logdir)

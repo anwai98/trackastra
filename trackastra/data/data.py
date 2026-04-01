@@ -1118,7 +1118,6 @@ class CTCData(Dataset):
             # build features
             if self.features in ("pretrained_feats", "pretrained_feats_aug"):
                 from trackastra_pretrained_feats import FeatureExtractor, WRPretrainedFeatures
-                import torch
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 feature_extractor = FeatureExtractor.from_model_name(
                     self.pretrained_feats_model,
