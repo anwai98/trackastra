@@ -214,7 +214,11 @@ class WrappedLightningModule(pl.LightningModule):
         else:
             pretrained_feats = None
 
-        A_pred = self.model(coords, feats, pretrained_features=pretrained_feats, padding_mask=padding_mask)
+        if pretrained_feats is not None:
+            A_pred = self.model(coords, feats, pretrained_features=pretrained_feats, padding_mask=padding_mask)
+        else:
+            A_pred = self.model(coords, feats, padding_mask=padding_mask)
+
         # remove inf values that might happen due to float16 numerics
         A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
 
