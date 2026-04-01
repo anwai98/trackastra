@@ -403,6 +403,7 @@ def _transform_affine(k: str, v: np.ndarray, M: np.ndarray):
         "intensity_max",
         "intensity_min",
         "border_dist",
+        "pretrained_feats",
     ):
         pass
     else:
@@ -434,7 +435,7 @@ class WRRandomAffine(WRBaseAugmentation):
         )
 
         # M is by default 3D , we need to remove the last dimension for 2D
-        self._M = self._M[-features.ndim :, -features.ndim :]
+        self._M = self._M[-features.ndim:, -features.ndim:]
         points = features.coords @ self._M.T
 
         feats = OrderedDict(

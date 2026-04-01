@@ -180,8 +180,13 @@ class CTCData(Dataset):
         self.detection_folders = detection_folders
         self.ndim = ndim
         self.features = features
+        self.pretrained_feats_model = kwargs.get("pretrained_feats_model", None)
+        self.pretrained_feats_mode = kwargs.get("pretrained_feats_mode", "mean_patches_exact")
+        self.pretrained_feats_additional_props = kwargs.get("pretrained_feats_additional_props", None)
 
-        if features not in ("none", "wrfeat") and features not in _PROPERTIES[ndim]:
+        if features not in (
+            "none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"
+        ) and features not in _PROPERTIES[ndim]:
             raise ValueError(
                 f"'{features}' not one of the supported {ndim}D features"
                 f" {tuple(_PROPERTIES[ndim].keys())}"
@@ -225,7 +230,7 @@ class CTCData(Dataset):
 
         start = default_timer()
 
-        if self.features == "wrfeat":
+        if self.features in ("wrfeat", "pretrained_feats", "pretrained_feats_aug"):
             self.windows = self._load_wrfeat()
         else:
             self.windows = self._load()
@@ -295,7 +300,7 @@ class CTCData(Dataset):
 
         start = default_timer()
 
-        if self.features == "wrfeat":
+        if self.features in ("wrfeat", "pretrained_feats", "pretrained_feats_aug"):
             self.windows = self._load_wrfeat()
         else:
             self.windows = self._load()
@@ -343,7 +348,7 @@ class CTCData(Dataset):
             default_augmenter,
         )
 
-        if self.features == "wrfeat":
+        if self.features in ("wrfeat", "pretrained_feats", "pretrained_feats_aug"):
             return self._setup_features_augs_wrfeat(ndim, features, augment, crop_size)
 
         cropper = (
@@ -517,7 +522,7 @@ class CTCData(Dataset):
             tifffile.imread(f).astype(dtype)
             for f in tqdm(
                 sorted(folder.glob("*.tif"))[
-                    self.start_frame : self.end_frame : self.downscale_temporal
+                    self.start_frame: self.end_frame: self.downscale_temporal
                 ],
                 leave=False,
                 desc=f"Loading [{self.start_frame}:{self.end_frame}]",
@@ -774,7 +779,8 @@ class CTCData(Dataset):
                         f" {det_folder}:{t1}"
                     )
 
-                # build matrix from incomplete labels, but full lineage graph. If a label is missing, I should skip over it.
+                # build matrix from incomplete labels, but full lineage graph.
+                # If a label is missing, I should skip over it.
                 A = _ctc_assoc_matrix(
                     _labels,
                     _ts,
@@ -808,7 +814,7 @@ class CTCData(Dataset):
 
     def __getitem__(self, n: int, return_dense=None):
         # if not set, use default
-        if self.features == "wrfeat":
+        if self.features in ("wrfeat", "pretrained_feats", "pretrained_feats_aug"):
             return self._getitem_wrfeat(n, return_dense)
 
         if return_dense is None:
@@ -1042,6 +1048,7 @@ class CTCData(Dataset):
         self.gt_masks = self._check_dimensions(self.gt_masks)
 
         # Load images
+        raw_imgs = None
         if self.img_folder is None:
             if self.gt_masks is not None:
                 self.imgs = np.zeros_like(self.gt_masks)
@@ -1050,10 +1057,12 @@ class CTCData(Dataset):
         else:
             logger.info("Loading images")
             imgs = self._load_tiffs(self.img_folder, dtype=np.float32)
+            raw_imgs = np.stack(list(imgs))  # keep raw for pretrained feature extractor
             self.imgs = np.stack([
-                normalize(_x) for _x in tqdm(imgs, desc="Normalizing", leave=False)
+                normalize(_x) for _x in tqdm(raw_imgs, desc="Normalizing", leave=False)
             ])
             self.imgs = self._check_dimensions(self.imgs)
+            raw_imgs = self._check_dimensions(raw_imgs)
             if self.compress:
                 # prepare images to be compressed later (e.g. removing non masked parts for regionprops features)
                 self.imgs = np.stack([
@@ -1107,13 +1116,37 @@ class CTCData(Dataset):
             self.det_masks[_f] = det_masks
 
             # build features
-
-            features = joblib.Parallel(n_jobs=8)(
-                joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
-                    mask=mask[None], img=img[None], t_start=t
+            if self.features in ("pretrained_feats", "pretrained_feats_aug"):
+                from trackastra_pretrained_feats import FeatureExtractor, WRPretrainedFeatures
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                feature_extractor = FeatureExtractor.from_model_name(
+                    self.pretrained_feats_model,
+                    self.imgs.shape[-2:],
+                    save_path=self.root / "embeddings",
+                    mode=self.pretrained_feats_mode,
+                    device=device,
+                    additional_features=self.pretrained_feats_additional_props,
                 )
-                for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
-            )
+                imgs_for_extractor = raw_imgs if raw_imgs is not None else self.imgs
+                feature_extractor.precompute_image_embeddings(imgs_for_extractor)
+                features = [
+                    WRPretrainedFeatures.from_mask_img(
+                        img=img[None],
+                        mask=mask[None],
+                        feature_extractor=feature_extractor,
+                        t_start=t,
+                        additional_properties=feature_extractor.additional_features,
+                    )
+                    for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
+                ]
+            else:
+                features = joblib.Parallel(n_jobs=8)(
+                    joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
+                        mask=mask[None], img=img[None], t_start=t
+                    )
+                    for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
+                )
 
             properties_by_time = dict()
             for _t, _feats in enumerate(features):
@@ -1162,7 +1195,8 @@ class CTCData(Dataset):
                 A = np.zeros((0, 0), dtype=bool)
                 coords = np.zeros((0, feat.ndim), dtype=int)
             else:
-                # build matrix from incomplete labels, but full lineage graph. If a label is missing, I should skip over it.
+                # build matrix from incomplete labels, but full lineage graph.
+                # If a label is missing, I should skip over it.
                 A = _ctc_assoc_matrix(
                     labels,
                     timepoints,
@@ -1229,6 +1263,9 @@ class CTCData(Dataset):
         coords0 = torch.from_numpy(coords0).float()
         assoc_matrix = torch.from_numpy(assoc_matrix.astype(np.float32))
         features = torch.from_numpy(feat.features_stacked).float()
+        pretrained_feats = feat.pretrained_feats
+        if pretrained_feats is not None:
+            pretrained_feats = torch.from_numpy(pretrained_feats).float()
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
 
@@ -1240,6 +1277,8 @@ class CTCData(Dataset):
             coords0 = coords0[:n_elems]
             features = features[:n_elems]
             assoc_matrix = assoc_matrix[:n_elems, :n_elems]
+            if pretrained_feats is not None:
+                pretrained_feats = pretrained_feats[:n_elems]
             logger.debug(
                 f"Clipped window of size {timepoints[n_elems - 1] - timepoints.min()}"
             )
@@ -1251,6 +1290,7 @@ class CTCData(Dataset):
             coords = coords0.clone()
         res = dict(
             features=features,
+            pretrained_feats=pretrained_feats,
             coords0=coords0,
             coords=coords,
             assoc_matrix=assoc_matrix,
@@ -1500,7 +1540,7 @@ def collate_sequence_padding(batch):
     # add boolean mask that signifies whether tokens are padded or not (such that they can be ignored later)
     pad_mask = torch.zeros((len(batch), n_max_len), dtype=torch.bool)
     for i, n_pad in enumerate(n_pads):
-        pad_mask[i, n_max_len - n_pad :] = True
+        pad_mask[i, n_max_len - n_pad:] = True
 
     batch_new["padding_mask"] = pad_mask.bool()
     return batch_new

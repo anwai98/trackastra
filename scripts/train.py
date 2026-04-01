@@ -208,7 +208,13 @@ class WrappedLightningModule(pl.LightningModule):
         padding_mask = batch["padding_mask"]
         padding_mask = padding_mask.bool()
 
-        A_pred = self.model(coords, feats, padding_mask=padding_mask)
+        pretrained_feats = batch.get("pretrained_feats", None)
+        if pretrained_feats is not None and pretrained_feats.numel() > 0:
+            pretrained_feats = pretrained_feats.to(coords.device)
+        else:
+            pretrained_feats = None
+
+        A_pred = self.model(coords, feats, pretrained_features=pretrained_feats, padding_mask=padding_mask)
         # remove inf values that might happen due to float16 numerics
         A_pred.clamp_(torch.finfo(torch.float16).min, torch.finfo(torch.float16).max)
 
@@ -632,7 +638,8 @@ class MyModelCheckpoint(pl.pytorch.callbacks.Callback):
 
 def create_run_name(args):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # name = f"{timestamp}_{args.name}_feats_{args.features}_pos_{args.attn_positional_bias}_causal_norm_{args.causal_norm}"
+    # name = f"{timestamp}_{args.name}_feats_{args.features}_pos_" + \
+    #     f"{args.attn_positional_bias}_causal_norm_{args.causal_norm}"
     if args.timestamp:
         name = f"{timestamp}_{args.name}"
     else:
@@ -817,6 +824,9 @@ def train(args):
         sanity_dist=args.sanity_dist,
         crop_size=args.crop_size,
         compress=args.compress,
+        pretrained_feats_model=args.pretrained_feats_model,
+        pretrained_feats_mode=args.pretrained_feats_mode,
+        pretrained_feats_additional_props=args.pretrained_feats_additional_props,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -920,7 +930,7 @@ def train(args):
     # Compiling does not work!
     # model_lightning = torch.compile(model_lightning)
 
-    # if logdir already exists and --resume option is set, load the last checkpoint (eg when continuing training after crash)
+    # if logdir already exists and --resume option is set, load the last checkpoint (eg when continuing training after crash)  # noqa
     if logdir is not None and logdir.exists() and args.resume:
         logging.info("logdir exists, loading last state of model")
         fpath = model_lightning.checkpoint_path(logdir)
@@ -1065,8 +1075,68 @@ def parse_train_args():
             "patch",
             "patch_regionprops",
             "wrfeat",
+            "pretrained_feats",
+            "pretrained_feats_aug",
         ],
         default="wrfeat",
+    )
+    parser.add_argument(
+        "--pretrained_feats_model",
+        type=str,
+        default=None,
+        help="SAM2 model name for pretrained feature extraction (e.g. facebook/sam2.1-hiera-base-plus)",
+    )
+    parser.add_argument(
+        "--pretrained_feats_mode",
+        type=str,
+        default="mean_patches_exact",
+        help="Pooling mode for pretrained features",
+    )
+    parser.add_argument(
+        "--pretrained_feats_additional_props",
+        type=none_or_str,
+        default=None,
+        help="Additional region properties to concatenate with pretrained features (e.g. regionprops_small)",
+    )
+    parser.add_argument(
+        "--pretrained_n_augs",
+        type=int,
+        default=15,
+        help="Number of augmentations for pretrained_feats_aug feature extraction",
+    )
+    parser.add_argument(
+        "--reduced_pretrained_feat_dim",
+        type=int,
+        default=None,
+        help="Reduce pretrained feature dimension via PCA to this size",
+    )
+    parser.add_argument(
+        "--rotate_features",
+        type=str2bool,
+        default=False,
+        help="Apply random rotation augmentation to pretrained features during training",
+    )
+    parser.add_argument(
+        "--disable_all_coords",
+        type=str2bool,
+        default=False,
+    )
+    parser.add_argument(
+        "--disable_xy_coords",
+        type=str2bool,
+        default=False,
+    )
+    parser.add_argument(
+        "--pretrained_model_path",
+        type=none_or_str,
+        default=None,
+        help="Path to a local pretrained model folder (overrides --model for loading weights)",
+    )
+    parser.add_argument(
+        "--weight_decay",
+        type=float,
+        default=0.0,
+        help="AdamW weight decay",
     )
     parser.add_argument(
         "--causal_norm",
