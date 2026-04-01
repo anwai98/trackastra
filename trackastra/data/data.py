@@ -181,12 +181,18 @@ class CTCData(Dataset):
         self.ndim = ndim
         self.features = features
         self.pretrained_feats_model = kwargs.get("pretrained_feats_model", None)
-        self.pretrained_feats_mode = kwargs.get("pretrained_feats_mode", "mean_patches_exact")
-        self.pretrained_feats_additional_props = kwargs.get("pretrained_feats_additional_props", None)
+        self.pretrained_feats_mode = kwargs.get(
+            "pretrained_feats_mode", "mean_patches_exact"
+        )
+        self.pretrained_feats_additional_props = kwargs.get(
+            "pretrained_feats_additional_props", None
+        )
 
-        if features not in (
-            "none", "wrfeat", "pretrained_feats", "pretrained_feats_aug"
-        ) and features not in _PROPERTIES[ndim]:
+        if (
+            features
+            not in ("none", "wrfeat", "pretrained_feats", "pretrained_feats_aug")
+            and features not in _PROPERTIES[ndim]
+        ):
             raise ValueError(
                 f"'{features}' not one of the supported {ndim}D features"
                 f" {tuple(_PROPERTIES[ndim].keys())}"
@@ -522,7 +528,7 @@ class CTCData(Dataset):
             tifffile.imread(f).astype(dtype)
             for f in tqdm(
                 sorted(folder.glob("*.tif"))[
-                    self.start_frame: self.end_frame: self.downscale_temporal
+                    self.start_frame : self.end_frame : self.downscale_temporal
                 ],
                 leave=False,
                 desc=f"Loading [{self.start_frame}:{self.end_frame}]",
@@ -1117,7 +1123,11 @@ class CTCData(Dataset):
 
             # build features
             if self.features in ("pretrained_feats", "pretrained_feats_aug"):
-                from trackastra_pretrained_feats import FeatureExtractor, WRPretrainedFeatures
+                from trackastra_pretrained_feats import (
+                    FeatureExtractor,
+                    WRPretrainedFeatures,
+                )
+
                 device = "cuda" if torch.cuda.is_available() else "cpu"
                 feature_extractor = FeatureExtractor.from_model_name(
                     self.pretrained_feats_model,
@@ -1539,7 +1549,7 @@ def collate_sequence_padding(batch):
     # add boolean mask that signifies whether tokens are padded or not (such that they can be ignored later)
     pad_mask = torch.zeros((len(batch), n_max_len), dtype=torch.bool)
     for i, n_pad in enumerate(n_pads):
-        pad_mask[i, n_max_len - n_pad:] = True
+        pad_mask[i, n_max_len - n_pad :] = True
 
     batch_new["padding_mask"] = pad_mask.bool()
     return batch_new

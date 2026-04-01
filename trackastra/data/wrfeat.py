@@ -435,7 +435,7 @@ class WRRandomAffine(WRBaseAugmentation):
         )
 
         # M is by default 3D , we need to remove the last dimension for 2D
-        self._M = self._M[-features.ndim:, -features.ndim:]
+        self._M = self._M[-features.ndim :, -features.ndim :]
         points = features.coords @ self._M.T
 
         feats = OrderedDict(
