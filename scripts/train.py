@@ -1112,7 +1112,7 @@ def parse_train_args():
         "--pretrained_n_augs",
         type=int,
         default=15,
-        help="Number of augmentations for pretrained_feats_aug feature extraction",
+        help="Number of augmented dataset copies to create for pretrained features extraction",
     )
     parser.add_argument(
         "--reduced_pretrained_feat_dim",
