@@ -1094,7 +1094,7 @@ def parse_train_args():
         "--pretrained_feats_model",
         type=str,
         default=None,
-        help="SAM2 model name for pretrained feature extraction (e.g. facebook/sam2.1-hiera-base-plus)",
+        help="Model name for pretrained feature extraction (e.g. facebook/sam2.1-hiera-base-plus)",
     )
     parser.add_argument(
         "--pretrained_feats_mode",
