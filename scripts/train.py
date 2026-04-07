@@ -1123,8 +1123,8 @@ def parse_train_args():
     parser.add_argument(
         "--rotate_features",
         type=str2bool,
-        default=False,
-        help="Apply random rotation augmentation to pretrained features during training",
+        default=True,
+        help="Apply feature disambiguation to pretrained features based on coordinates to mitigate overfitting and avoid proximity-induced ambiguity in pretrained features",
     )
     parser.add_argument(
         "--disable_all_coords",
