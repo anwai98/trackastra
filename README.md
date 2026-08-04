@@ -46,14 +46,9 @@ Trackastra can then be installed from PyPI using `pip`:
 ```bash
 pip install trackastra
 ```
-
-### With ILP support
-For tracking with an integer linear program (ILP, which is optional)
+or from [conda-forge](https://anaconda.org/conda-forge/trackastra):
 ```bash
-conda create --name trackastra python=3.10 --no-default-packages
-conda activate trackastra
-conda install -c conda-forge -c gurobi -c funkelab ilpy
-pip install "trackastra[ilp]"
+conda install -c conda-forge trackastra
 ```
 
 ### 🆕😎 With pretrained features
@@ -68,14 +63,15 @@ and select the `general_2d_w_SAM2_features` pre-trained model for predictions, p
 ```bash
 pip install "trackastra[train]"
 ```
+The conda-forge package [ships the core/inference dependencies only](https://github.com/conda-forge/trackastra-feedstock/pull/9), so with conda install the training dependencies alongside it:
+```bash
+conda install -c conda-forge trackastra lightning wandb tensorboard configargparse matplotlib kornia gitpython
+```
 
 <details>
 <summary>📄 <h4>Development installation</h4></summary>
   
 ```bash
-conda create --name trackastra python=3.10 --no-default-packages
-conda activate trackastra
-conda install -c conda-forge -c gurobi -c funkelab ilpy
 git clone https://github.com/weigertlab/trackastra.git
 pip install -e "./trackastra[all]"
 ```
@@ -84,12 +80,7 @@ pip install -e "./trackastra[all]"
 <details>
 <summary>📄 <h4></b>Notes/Troubleshooting</h4></summary>
   
-- For the optional ILP linking, this will install [`motile`](https://funkelab.github.io/motile/index.html) and binaries for two discrete optimizers:
-
-  1. The [Gurobi Optimizer](https://www.gurobi.com/). This is a commercial solver, which requires a valid license. Academic licenses are provided for free, see [here](https://www.gurobi.com/academia/academic-program-and-licenses/) for how to obtain one.
-
-  2. The [SCIP Optimizer](https://www.scipopt.org/), a free and open source solver. If `motile` does not find a valid Gurobi license, it will fall back to using SCIP.
-- On MacOS, installing packages into the conda environment before installing `ilpy` can cause problems.
+- For ILP-based linking (`mode="ilp"`), Trackastra uses [`motile`](https://funkelab.github.io/motile/index.html) with two discrete optimizers: the free [SCIP Optimizer](https://www.scipopt.org/) and the [Gurobi Optimizer](https://www.gurobi.com/). If a valid Gurobi license is found, it will be used automatically; otherwise motile falls back to SCIP. Free academic Gurobi licenses are available [here](https://www.gurobi.com/academia/academic-program-and-licenses/).
 - 2024-06-07: On Apple M3 chips, you might have to use the nightly build of `torch` and `torchvision`, or worst case build them yourself.
   
 </details>
@@ -122,7 +113,7 @@ The predicted associations can then be used for linking with several modes:
 
 - `greedy_nodiv` (greedy linking with no division) - fast, no additional dependencies
 - `greedy` (greedy linking with division) - fast, no additional dependencies
-- `ilp` (ILP based linking) - slower but more accurate, needs [`motile`](https://github.com/funkelab/motile)
+- `ilp` (ILP based linking) - slower but more accurate, uses [`motile`](https://github.com/funkelab/motile)
 
 Apart from that, no hyperparameters to choose :)
 
