@@ -215,7 +215,9 @@ class WrappedLightningModule(pl.LightningModule):
             pretrained_feats = pretrained_feats.to(coords.device)
             if torch.any(torch.isnan(pretrained_feats)):
                 nan_dims = torch.any(torch.isnan(pretrained_feats), dim=-1)
-                raise ValueError(f"NaN in pretrained features in dimensions: {nan_dims}")
+                raise ValueError(
+                    f"NaN in pretrained features in dimensions: {nan_dims}"
+                )
         else:
             pretrained_feats = None
 
@@ -849,7 +851,9 @@ def train(args):
             # Dispatches create() to TrackingTransformerwPretrainedFeats, so that the
             # preallocated batch goes through the same projection as during training.
             dummy_config["pretrained_feat_dim"] = dummy_data.pretrained_feat_dim
-            dummy_config["reduced_pretrained_feat_dim"] = args.reduced_pretrained_feat_dim
+            dummy_config["reduced_pretrained_feat_dim"] = (
+                args.reduced_pretrained_feat_dim
+            )
             dummy_config["disable_xy_coords"] = args.disable_xy_coords
             dummy_config["disable_all_coords"] = args.disable_all_coords
         dummy_model = TrackingTransformer.create(dummy_config)
@@ -1007,7 +1011,9 @@ def train(args):
         )
         if args.features in ("pretrained_feats", "pretrained_feats_aug"):
             model_config["pretrained_feat_dim"] = pretrained_backbone_feat_dim(args)
-            model_config["reduced_pretrained_feat_dim"] = args.reduced_pretrained_feat_dim
+            model_config["reduced_pretrained_feat_dim"] = (
+                args.reduced_pretrained_feat_dim
+            )
             model_config["disable_xy_coords"] = args.disable_xy_coords
             model_config["disable_all_coords"] = args.disable_all_coords
         model = TrackingTransformer.create(model_config)
