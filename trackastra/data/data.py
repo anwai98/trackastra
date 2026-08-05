@@ -1209,8 +1209,14 @@ class CTCData(Dataset):
             # The extractor holds the pretrained backbone and its precomputed embeddings.
             # Neither is needed once the features are built, and keeping them around makes
             # the dataset unpicklable for the on-disk cache (see cache_class).
+            # Drop the embeddings before clear_model(), whose empty_cache() would otherwise
+            # still see them referenced, so their GPU memory is never handed back and the
+            # next dataset of a multi-sequence run runs out of memory.
+            self.feature_extractor.embeddings = None
             self.feature_extractor.clear_model()
             self.feature_extractor = None
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
 
         return windows
 
