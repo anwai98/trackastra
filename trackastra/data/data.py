@@ -1582,14 +1582,15 @@ def rotate_features_by_coords(
         raise ValueError(f"Feature dimension must be even for rotation, got {d}")
 
     extent = torch.tensor(image_shape[-2:], dtype=features.dtype)
-    angles = 2 * math.pi * coords[:, 1:3].to(features.dtype) / extent
-    angles = angles.repeat(1, d // 2)
+    spatial_angles = 2 * math.pi * coords[:, 1:3].to(features.dtype) / extent
+    n_pairs = d // 2
+    angles = spatial_angles.repeat(1, math.ceil(n_pairs / 2))[:, :n_pairs]
     cos, sin = torch.cos(angles), torch.sin(angles)
 
     pairs = features.view(n_objects, -1, 2)
     x_feat, y_feat = pairs[..., 0], pairs[..., 1]
-    x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
-    y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
+    x_rot = x_feat * cos - y_feat * sin
+    y_rot = x_feat * sin + y_feat * cos
     return torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
 
 
