@@ -21,11 +21,14 @@ reduced_pretrained_feat_dim: 128  # FC layer output dim fed to encoder
 pretrained_n_augs: 3  # augmented copies per sequence; increase for larger datasets
 rotate_features: true  # feature disambiguation; recommended with pretrained_feats_aug
 
-# Finetuning from a pretrained SAM2-features model.
-# Remove or set to null to train from scratch (not supported for pretrained_feats).
+# Finetuning from a pretrained SAM2-features model. Use pretrained_model_path instead to
+# start from a local model folder, or remove both to train from scratch, in which case the
+# architecture below is used as is instead of being checked against the loaded config.
 model: general_2d_w_SAM2_features  # auto-downloaded if not already present
 
-# Model architecture - must match the pretrained model config
+# Model architecture - must match the pretrained model config, otherwise loading it
+# raises a mismatch error. pos_embed_per_dim, feat_embed_per_dim, attn_positional_bias
+# and spatial_pos_cutoff are left at their defaults, which already match.
 d_model: 256
 num_encoder_layers: 4
 num_decoder_layers: 4
@@ -35,7 +38,7 @@ attn_dist_mode: v1
 causal_norm: none
 
 # Training
-epochs: 500
+epochs: 1000
 warmup_epochs: 5
 train_samples: 32000
 batch_size: 16
@@ -43,9 +46,12 @@ max_tokens: 2048
 lr: 1e-4
 weight_decay: 0.01
 weight_by_dataset: true
+augment: 3
+delta_cutoff: 1
 crop_size:
   - 320
   - 320
 
 # Caching
 cachedir: .cache
+compress: true

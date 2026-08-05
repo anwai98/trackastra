@@ -213,6 +213,9 @@ class WrappedLightningModule(pl.LightningModule):
         pretrained_feats = batch.get("pretrained_feats", None)
         if pretrained_feats is not None and pretrained_feats.numel() > 0:
             pretrained_feats = pretrained_feats.to(coords.device)
+            if torch.any(torch.isnan(pretrained_feats)):
+                nan_dims = torch.any(torch.isnan(pretrained_feats), dim=-1)
+                raise ValueError(f"NaN in pretrained features in dimensions: {nan_dims}")
         else:
             pretrained_feats = None
 
@@ -649,6 +652,24 @@ class MyModelCheckpoint(pl.pytorch.callbacks.Callback):
 #     return weight
 
 
+def pretrained_backbone_feat_dim(args):
+    """Embedding dim of the pretrained backbone, e.g. 256 for SAM2."""
+    from trackastra_pretrained_feats.pretrained_features import (
+        AVAILABLE_PRETRAINED_BACKBONES,
+    )
+
+    return AVAILABLE_PRETRAINED_BACKBONES[args.pretrained_feats_model]["feat_dim"]
+
+
+def pretrained_additional_feat_dim(args):
+    """Stacked dim of the region props concatenated with the pretrained features."""
+    if args.pretrained_feats_additional_props is None:
+        return 0
+    from trackastra.data.wrfeat import WRFeatures
+
+    return WRFeatures.PROPERTIES_DIMS[args.pretrained_feats_additional_props][args.ndim]
+
+
 def create_run_name(args):
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
     # name = f"{timestamp}_{args.name}_feats_{args.features}_pos_" + \
@@ -702,24 +723,33 @@ def train(args):
         "cuda" if args.device == "cuda" and torch.cuda.is_available() else "cpu"
     )
     args.seed = seed(args.seed)
-    if (
-        args.features in ("pretrained_feats", "pretrained_feats_aug")
-        and args.model is None
-        and args.pretrained_model_path is None
-    ):
-        raise ValueError(
-            "Training a pretrained_feats model from scratch is not supported."
-            " Provide --model or --pretrained_model_path with a compatible pretrained model."
+    if args.features in ("pretrained_feats", "pretrained_feats_aug"):
+        if args.pretrained_feats_model is None:
+            raise ValueError(
+                "pretrained_feats modes require --pretrained_feats_model"
+                " (e.g. facebook/sam2.1-hiera-base-plus)"
+            )
+        if args.pretrained_feats_mode is None:
+            raise ValueError("pretrained_feats modes require --pretrained_feats_mode")
+
+        from trackastra_pretrained_feats.pretrained_features import (
+            AVAILABLE_PRETRAINED_BACKBONES,
         )
 
-    if (
-        args.features in ("pretrained_feats", "pretrained_feats_aug")
-        and args.pretrained_feats_model is None
-    ):
-        raise ValueError(
-            "pretrained_feats modes require --pretrained_feats_model"
-            " (e.g. facebook/sam2.1-hiera-base-plus)"
-        )
+        if args.pretrained_feats_model not in AVAILABLE_PRETRAINED_BACKBONES:
+            raise ValueError(
+                f"Unknown pretrained model '{args.pretrained_feats_model}'. Available:"
+                f" {tuple(AVAILABLE_PRETRAINED_BACKBONES.keys())}"
+            )
+        if args.pretrained_feats_additional_props is None:
+            # Without region props the pretrained features are the only features, and
+            # TrackingTransformerwPretrainedFeats.forward then squeezes away the batch
+            # dimension for single-element batches, which breaks the concat with the
+            # positional encoding. Guard until that is fixed in trackastra_pretrained_feats.
+            raise ValueError(
+                "pretrained_feats modes currently require --pretrained_feats_additional_props"
+                " (e.g. regionprops_small)"
+            )
 
     if args.model is None:
         logger.warning("Training from scratch, this is slow!\n")
@@ -799,7 +829,7 @@ def train(args):
             pretrained_n_augs=args.pretrained_n_augs,
             rotate_features=args.rotate_features,
         )
-        dummy_model = TrackingTransformer(
+        dummy_config = dict(
             coord_dim=dummy_data.ndim,
             feat_dim=dummy_data.feat_dim,
             d_model=args.d_model,
@@ -815,6 +845,14 @@ def train(args):
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
         )
+        if args.features in ("pretrained_feats", "pretrained_feats_aug"):
+            # Dispatches create() to TrackingTransformerwPretrainedFeats, so that the
+            # preallocated batch goes through the same projection as during training.
+            dummy_config["pretrained_feat_dim"] = dummy_data.pretrained_feat_dim
+            dummy_config["reduced_pretrained_feat_dim"] = args.reduced_pretrained_feat_dim
+            dummy_config["disable_xy_coords"] = args.disable_xy_coords
+            dummy_config["disable_all_coords"] = args.disable_all_coords
+        dummy_model = TrackingTransformer.create(dummy_config)
 
         dummy_model_lightning = WrappedLightningModule(
             model=dummy_model,
@@ -944,7 +982,11 @@ def train(args):
             model = TrackingTransformer.from_folder(fpath, args=args)
     else:
         feat_dim = 0 if args.features == "none" else 7 if args.ndim == 2 else 12
-        model = TrackingTransformer(
+        if args.features in ("pretrained_feats", "pretrained_feats_aug"):
+            # The datasets are only built inside trainer.fit(), so the feature dims have to
+            # come from the config rather than from a loaded CTCData.
+            feat_dim = pretrained_additional_feat_dim(args)
+        model_config = dict(
             # coord_dim=datasets["train"].datasets[0].ndim,
             coord_dim=args.ndim,
             # feat_dim=datasets["train"].datasets[0].feat_dim,
@@ -963,6 +1005,12 @@ def train(args):
             attn_dist_mode=args.attn_dist_mode,
             causal_norm=args.causal_norm,
         )
+        if args.features in ("pretrained_feats", "pretrained_feats_aug"):
+            model_config["pretrained_feat_dim"] = pretrained_backbone_feat_dim(args)
+            model_config["reduced_pretrained_feat_dim"] = args.reduced_pretrained_feat_dim
+            model_config["disable_xy_coords"] = args.disable_xy_coords
+            model_config["disable_all_coords"] = args.disable_all_coords
+        model = TrackingTransformer.create(model_config)
 
     model_lightning = WrappedLightningModule(
         model=model,
@@ -1158,14 +1206,16 @@ def parse_train_args():
     parser.add_argument(
         "--reduced_pretrained_feat_dim",
         type=int,
-        default=None,
-        help="Dimension of pretrained features after the FC layer fed to the encoder (concatenated with additional region props if set); recommended: 128",
+        default=128,
+        help="Dimension of pretrained features after the FC layer fed to the encoder"
+        " (concatenated with additional region props if set)",
     )
     parser.add_argument(
         "--rotate_features",
         type=str2bool,
         default=True,
-        help="Apply feature disambiguation to pretrained features based on coordinates to mitigate overfitting and avoid proximity-induced ambiguity in pretrained features",
+        help="Apply feature disambiguation to pretrained features based on coordinates to"
+        " mitigate overfitting and avoid proximity-induced ambiguity in pretrained features",
     )
     parser.add_argument(
         "--disable_all_coords",

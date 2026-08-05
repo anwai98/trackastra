@@ -1,4 +1,5 @@
 import logging
+import math
 from collections.abc import Sequence
 from pathlib import Path
 from timeit import default_timer
@@ -1011,7 +1012,8 @@ class CTCData(Dataset):
     def _setup_features_augs_wrfeat(
         self, ndim: int, features: str, augment: int, crop_size: tuple[int]
     ):
-        # FIXME: hardcoded for wrfeat; for pretrained_feats the actual dim depends on additional_props
+        # FIXME: hardcoded. For pretrained_feats this is overwritten in _load_wrfeat, where
+        # the actual dim of the additional region props is known.
         feat_dim = 7 if ndim == 2 else 12
         if augment == 1:
             augmenter = wrfeat.WRAugmentationPipeline([
@@ -1092,6 +1094,7 @@ class CTCData(Dataset):
         # Build the pretrained feature extractor once, before the detection folder loop,
         # so embeddings are not recomputed for each detection folder.
         self.feature_extractor = None
+        self.pretrained_feat_dim = 0
         WRPretrainedFeatures = None
         if self.features in ("pretrained_feats", "pretrained_feats_aug"):
             from trackastra_pretrained_feats import (
@@ -1099,10 +1102,14 @@ class CTCData(Dataset):
                 WRPretrainedFeatures,
             )
 
-            if self.pretrained_n_augs != 3:
+            if self.features == "pretrained_feats_aug" and self.pretrained_n_augs > 0:
                 logger.warning(
-                    "pretrained_n_augs is not yet wired into FeatureExtractor"
-                    " - the value will be ignored."
+                    "pretrained_n_augs is not wired into FeatureExtractor yet, so no"
+                    " augmented copies of the embeddings are generated."
+                    " FeatureExtractorAugWrapper in trackastra_pretrained_feats still"
+                    " imports trackastra.data.pretrained_augmentations and"
+                    " wrfeat.WRAugPretrainedFeatures, which do not exist in trackastra,"
+                    " so it cannot be used as is."
                 )
             device = "cuda" if torch.cuda.is_available() else "cpu"
             self.feature_extractor = FeatureExtractor.from_model_name(
@@ -1113,8 +1120,10 @@ class CTCData(Dataset):
                 device=device,
                 additional_features=self.pretrained_feats_additional_props,
             )
+            self.pretrained_feat_dim = self.feature_extractor.hidden_state_size
             imgs_for_extractor = raw_imgs if raw_imgs is not None else self.imgs
             self.feature_extractor.precompute_image_embeddings(imgs_for_extractor)
+        raw_imgs = None
 
         logger.info("Loading detections")
         for _f in self.detection_folders:
@@ -1175,6 +1184,12 @@ class CTCData(Dataset):
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 )
 
+            if self.features in ("pretrained_feats", "pretrained_feats_aug"):
+                # The shallow feature dim depends on pretrained_feats_additional_props,
+                # so read it off the features that were actually built.
+                stacked = features[0].features_stacked
+                self.feat_dim = 0 if stacked is None else stacked.shape[-1]
+
             properties_by_time = dict()
             for _t, _feats in enumerate(features):
                 properties_by_time[_t] = dict(
@@ -1189,6 +1204,13 @@ class CTCData(Dataset):
             )
 
             windows.extend(_w)
+
+        if self.feature_extractor is not None:
+            # The extractor holds the pretrained backbone and its precomputed embeddings.
+            # Neither is needed once the features are built, and keeping them around makes
+            # the dataset unpicklable for the on-disk cache (see cache_class).
+            self.feature_extractor.clear_model()
+            self.feature_extractor = None
 
         return windows
 
@@ -1297,7 +1319,9 @@ class CTCData(Dataset):
         )
         pretrained_feats = feat.pretrained_feats
         if pretrained_feats is not None:
-            pretrained_feats = torch.from_numpy(pretrained_feats).float()
+            # WRPretrainedFeatures stores these as a torch tensor, but WRFeatures.concat
+            # turns them into an array, so accept either.
+            pretrained_feats = torch.as_tensor(pretrained_feats).float()
         labels = torch.from_numpy(feat.labels).long()
         timepoints = torch.from_numpy(feat.timepoints).long()
 
@@ -1315,24 +1339,17 @@ class CTCData(Dataset):
                 f"Clipped window of size {timepoints[n_elems - 1] - timepoints.min()}"
             )
 
-        if (
-            self.rotate_features
-            and pretrained_feats is not None
-            and self.feature_extractor is not None
-        ):
-            spatial_coords = coords0[:, 1:].numpy()
-            centroids = spatial_coords / np.array(
-                self.imgs.shape[-2:], dtype=np.float32
-            )
-            pretrained_feats = self.feature_extractor.apply_rot_to_features(
-                pretrained_feats, centroids
-            )
-
         if self.augmenter is not None:
             coords = coords0.clone()
             coords[:, 1:] += torch.randint(0, 512, (1, self.ndim))
         else:
             coords = coords0.clone()
+
+        if self.rotate_features and pretrained_feats is not None:
+            pretrained_feats = rotate_features_by_coords(
+                pretrained_feats, coords, img.shape
+            )
+
         res = dict(
             features=features,
             pretrained_feats=pretrained_feats,
@@ -1534,6 +1551,40 @@ def pad_tensor(x, n_max: int, dim=0, value=0):
     # pad = torch.full(pad_shape, fill_value=value, dtype=x.dtype).to(x.device)
     pad = torch.full(pad_shape, fill_value=value, dtype=x.dtype)
     return torch.cat((x, pad), dim=dim)
+
+
+def rotate_features_by_coords(
+    features: torch.Tensor, coords: torch.Tensor, image_shape: tuple[int, ...]
+) -> torch.Tensor:
+    """Apply a RoPE-style rotation to each feature vector based on its spatial coordinates.
+
+    Disambiguates the pretrained features of nearby detections, which are otherwise nearly
+    identical for patch-pooled embeddings, and mitigates overfitting.
+
+    Args:
+        features (torch.Tensor): Features of shape (n_objects, d). d must be even.
+        coords (torch.Tensor): Coordinates of shape (n_objects, 1 + ndim), where the first
+            column is the timepoint.
+        image_shape (tuple): Shape of the window images, whose last two entries are taken
+            as (height, width) to normalize the coordinates with.
+
+    Returns:
+        torch.Tensor: Rotated features of shape (n_objects, d).
+    """
+    n_objects, d = features.shape
+    if d % 2 != 0:
+        raise ValueError(f"Feature dimension must be even for rotation, got {d}")
+
+    extent = torch.tensor(image_shape[-2:], dtype=features.dtype)
+    angles = 2 * math.pi * coords[:, 1:3].to(features.dtype) / extent
+    angles = angles.repeat(1, d // 2)
+    cos, sin = torch.cos(angles), torch.sin(angles)
+
+    pairs = features.view(n_objects, -1, 2)
+    x_feat, y_feat = pairs[..., 0], pairs[..., 1]
+    x_rot = x_feat * cos[:, ::2] - y_feat * sin[:, ::2]
+    y_rot = x_feat * sin[:, ::2] + y_feat * cos[:, ::2]
+    return torch.stack([x_rot, y_rot], dim=-1).reshape(n_objects, d)
 
 
 def collate_sequence_padding(batch):

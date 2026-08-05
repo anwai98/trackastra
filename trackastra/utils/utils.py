@@ -398,6 +398,15 @@ def preallocate_memory(dataset, model_lightning, batch_size, max_tokens, device)
             ),
             padding_mask=batched(torch.zeros(max_len, dtype=bool), batch_size, device),
         )
+        if x.get("pretrained_feats") is not None:
+            batch["pretrained_feats"] = batched(
+                torch.zeros(
+                    (max_len, *x["pretrained_feats"].shape[1:]),
+                    dtype=x["pretrained_feats"].dtype,
+                ),
+                batch_size,
+                device,
+            )
 
     loss = model_lightning._common_step(batch)["loss"]
     loss.backward()
