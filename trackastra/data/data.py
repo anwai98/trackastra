@@ -1,5 +1,6 @@
 import logging
 import math
+from collections import OrderedDict
 from collections.abc import Sequence
 from pathlib import Path
 from timeit import default_timer
@@ -1096,22 +1097,21 @@ class CTCData(Dataset):
         # so embeddings are not recomputed for each detection folder.
         self.feature_extractor = None
         self.pretrained_feat_dim = 0
+        self.aug_image_shapes = None
         WRPretrainedFeatures = None
+        # self.augmenter is None exactly when augment=0, which is how the data module marks
+        # the validation split. Augmented copies would make validation non deterministic.
+        use_augs = (
+            self.features == "pretrained_feats_aug"
+            and self.pretrained_n_augs > 0
+            and self.augmenter is not None
+        )
         if self.features in ("pretrained_feats", "pretrained_feats_aug"):
             from trackastra_pretrained_feats import (
                 FeatureExtractor,
                 WRPretrainedFeatures,
             )
 
-            if self.features == "pretrained_feats_aug" and self.pretrained_n_augs > 0:
-                logger.warning(
-                    "pretrained_n_augs is not wired into FeatureExtractor yet, so no"
-                    " augmented copies of the embeddings are generated."
-                    " FeatureExtractorAugWrapper in trackastra_pretrained_feats still"
-                    " imports trackastra.data.pretrained_augmentations and"
-                    " wrfeat.WRAugPretrainedFeatures, which do not exist in trackastra,"
-                    " so it cannot be used as is."
-                )
             device = "cuda" if torch.cuda.is_available() else "cpu"
             self.feature_extractor = FeatureExtractor.from_model_name(
                 self.pretrained_feats_model,
@@ -1122,8 +1122,11 @@ class CTCData(Dataset):
                 additional_features=self.pretrained_feats_additional_props,
             )
             self.pretrained_feat_dim = self.feature_extractor.hidden_state_size
-            imgs_for_extractor = raw_imgs if raw_imgs is not None else self.imgs
-            self.feature_extractor.precompute_image_embeddings(imgs_for_extractor)
+            if not use_augs:
+                # The augmented path recomputes embeddings per augmented copy itself.
+                imgs_for_extractor = raw_imgs if raw_imgs is not None else self.imgs
+                self.feature_extractor.precompute_image_embeddings(imgs_for_extractor)
+        raw_imgs_for_augs = raw_imgs if use_augs else None
         raw_imgs = None
 
         logger.info("Loading detections")
@@ -1166,7 +1169,15 @@ class CTCData(Dataset):
             self.det_masks[_f] = det_masks
 
             # build features
-            if self.features in ("pretrained_feats", "pretrained_feats_aug"):
+            if use_augs:
+                imgs_for_augs = (
+                    raw_imgs_for_augs if raw_imgs_for_augs is not None else self.imgs
+                )
+                features_per_aug = self._build_augmented_features(
+                    imgs_for_augs, det_masks
+                )
+                features = features_per_aug[0]
+            elif self.features in ("pretrained_feats", "pretrained_feats_aug"):
                 features = [
                     WRPretrainedFeatures.from_mask_img(
                         img=img[None],
@@ -1177,6 +1188,7 @@ class CTCData(Dataset):
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 ]
+                features_per_aug = [features]
             else:
                 features = joblib.Parallel(n_jobs=8)(
                     joblib.delayed(wrfeat.WRFeatures.from_mask_img)(
@@ -1184,6 +1196,7 @@ class CTCData(Dataset):
                     )
                     for t, (mask, img) in enumerate(zip(det_masks, self.imgs))
                 )
+                features_per_aug = [features]
 
             if self.features in ("pretrained_feats", "pretrained_feats_aug"):
                 # The shallow feature dim depends on pretrained_feats_additional_props,
@@ -1199,7 +1212,7 @@ class CTCData(Dataset):
             self.properties_by_time[_f] = properties_by_time
 
             _w = self._build_windows_wrfeat(
-                features,
+                features_per_aug,
                 det_masks,
                 det_gt_matching,
             )
@@ -1221,9 +1234,69 @@ class CTCData(Dataset):
 
         return windows
 
+    def _build_augmented_features(self, imgs: np.ndarray, det_masks: np.ndarray):
+        """Compute one set of per-timepoint features per augmented copy.
+
+        Returns a list of length pretrained_n_augs + 1, entry 0 being the unaugmented copy.
+        Detections that any copy lost, e.g. because augmentation moved them out of frame,
+        are dropped everywhere so that all copies share labels, timepoints and coords.
+        """
+        from trackastra_pretrained_feats.data.wrfeat import WRAugPretrainedFeatures
+        from trackastra_pretrained_feats.pretrained_augmentations import (
+            PretrainedAugmentations,
+        )
+        from trackastra_pretrained_feats.pretrained_features import (
+            FeatureExtractorAugWrapper,
+        )
+
+        wrapper = FeatureExtractorAugWrapper(
+            extractor=self.feature_extractor,
+            augmenter=PretrainedAugmentations(),
+            n_aug=self.pretrained_n_augs,
+        )
+        aug_dict = wrapper.compute_all_features(
+            torch.from_numpy(np.asarray(imgs)),
+            torch.from_numpy(np.asarray(det_masks).astype(np.int32)),
+        )
+        self.aug_image_shapes = wrapper.image_shape_reference
+
+        n_entries = self.pretrained_n_augs + 1
+        copies = [aug_dict[str(i)]["data"] for i in range(n_entries)]
+        # Keep only the detections that survived every augmentation
+        common = set.intersection(*[
+            {(t, lab) for t, per_t in copy.items() for lab in per_t} for copy in copies
+        ])
+
+        features_per_aug = []
+        for copy in copies:
+            per_timepoint = []
+            for t in sorted(copy):
+                labels = sorted(lab for lab in copy[t] if (t, lab) in common)
+                entries = [copy[t][lab] for lab in labels]
+                feats = OrderedDict()
+                for key in entries[0]["features"] if entries else ():
+                    feats[key] = np.stack([
+                        np.asarray(e["features"][key]) for e in entries
+                    ])
+                per_timepoint.append(
+                    WRAugPretrainedFeatures.from_window(
+                        features=feats,
+                        coords=np.stack([np.asarray(e["coords"]) for e in entries]),
+                        timepoints=np.full(len(entries), t, dtype=np.int32),
+                        labels=np.asarray(labels, dtype=np.int32),
+                    )
+                )
+            features_per_aug.append(per_timepoint)
+        n_total = sum(len(per_t) for per_t in copies[0].values())
+        logger.info(
+            f"Built {len(features_per_aug)} feature copies ({self.pretrained_n_augs}"
+            f" augmented), {len(common)} of {n_total} detections shared by all"
+        )
+        return features_per_aug
+
     def _build_windows_wrfeat(
         self,
-        features: Sequence[wrfeat.WRFeatures],
+        features_per_aug: Sequence[Sequence[wrfeat.WRFeatures]],
         det_masks: np.ndarray,
         matching: tuple[dict],
     ):
@@ -1241,7 +1314,11 @@ class CTCData(Dataset):
         ):
             img = self.imgs[t1:t2]
             mask = det_masks[t1:t2]
-            feat = wrfeat.WRFeatures.concat(features[t1:t2])
+            feats = [
+                wrfeat.WRFeatures.concat(per_aug[t1:t2]) for per_aug in features_per_aug
+            ]
+            # All copies share labels, timepoints and the association matrix
+            feat = feats[0]
 
             labels = feat.labels
             timepoints = feat.timepoints
@@ -1268,7 +1345,7 @@ class CTCData(Dataset):
                 assoc_matrix=A,
                 labels=labels,
                 timepoints=timepoints,
-                wrfeat=feat,
+                wrfeat=feats,
             )
             windows.append(w)
 
@@ -1289,7 +1366,11 @@ class CTCData(Dataset):
         mask = track["mask"]
         timepoints = track["timepoints"]
         # track["t1"]
-        feat = track["wrfeat"]
+        feats = track["wrfeat"]
+        # Draw one of the augmented copies. Index 0 is the unaugmented one, which is all
+        # there is unless pretrained_feats_aug generated more.
+        aug_choice = 0 if len(feats) == 1 else np.random.randint(len(feats))
+        feat = feats[aug_choice]
 
         if return_dense and isinstance(mask, _CompressedArray):
             mask = mask.decompress()
@@ -1353,8 +1434,13 @@ class CTCData(Dataset):
             coords = coords0.clone()
 
         if self.rotate_features and pretrained_feats is not None:
+            # Augmentation can resize the images, so normalize against the shape the
+            # chosen copy was extracted at rather than the original one.
+            image_shape = img.shape
+            if self.aug_image_shapes is not None:
+                image_shape = self.aug_image_shapes.get(aug_choice, image_shape)
             pretrained_feats = rotate_features_by_coords(
-                pretrained_feats, coords, img.shape, axes=self.rotate_feature_axes
+                pretrained_feats, coords, image_shape, axes=self.rotate_feature_axes
             )
 
         res = dict(
