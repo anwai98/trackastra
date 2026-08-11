@@ -194,6 +194,7 @@ class CTCData(Dataset):
         )
         self.pretrained_n_augs = kwargs.get("pretrained_n_augs", 3)
         self.rotate_features = kwargs.get("rotate_features", False)
+        self.rotate_feature_axes = kwargs.get("rotate_feature_axes", "y")
 
         if (
             features
@@ -1353,7 +1354,7 @@ class CTCData(Dataset):
 
         if self.rotate_features and pretrained_feats is not None:
             pretrained_feats = rotate_features_by_coords(
-                pretrained_feats, coords, img.shape
+                pretrained_feats, coords, img.shape, axes=self.rotate_feature_axes
             )
 
         res = dict(
@@ -1560,7 +1561,10 @@ def pad_tensor(x, n_max: int, dim=0, value=0):
 
 
 def rotate_features_by_coords(
-    features: torch.Tensor, coords: torch.Tensor, image_shape: tuple[int, ...]
+    features: torch.Tensor,
+    coords: torch.Tensor,
+    image_shape: tuple[int, ...],
+    axes: Literal["y", "x", "both"] = "y",
 ) -> torch.Tensor:
     """Apply a RoPE-style rotation to each feature vector based on its spatial coordinates.
 
@@ -1573,6 +1577,11 @@ def rotate_features_by_coords(
             column is the timepoint.
         image_shape (tuple): Shape of the window images, whose last two entries are taken
             as (height, width) to normalize the coordinates with.
+        axes (str): Which spatial coordinates drive the rotation angle. "y" and "x" derive
+            a single angle from that coordinate alone, "both" alternates between the two
+            across feature pairs. Defaults to "y", which is what the released
+            general_2d_w_SAM2_features model was trained with, so that finetuning it sees
+            the feature distribution it expects.
 
     Returns:
         torch.Tensor: Rotated features of shape (n_objects, d).
@@ -1580,11 +1589,16 @@ def rotate_features_by_coords(
     n_objects, d = features.shape
     if d % 2 != 0:
         raise ValueError(f"Feature dimension must be even for rotation, got {d}")
+    if axes not in ("y", "x", "both"):
+        raise ValueError(f"axes must be one of 'y', 'x', 'both', got '{axes}'")
 
     extent = torch.tensor(image_shape[-2:], dtype=features.dtype)
     spatial_angles = 2 * math.pi * coords[:, 1:3].to(features.dtype) / extent
     n_pairs = d // 2
-    angles = spatial_angles.repeat(1, math.ceil(n_pairs / 2))[:, :n_pairs]
+    if axes == "both":
+        angles = spatial_angles.repeat(1, math.ceil(n_pairs / 2))[:, :n_pairs]
+    else:
+        angles = spatial_angles[:, 0 if axes == "y" else 1, None].expand(-1, n_pairs)
     cos, sin = torch.cos(angles), torch.sin(angles)
 
     pairs = features.view(n_objects, -1, 2)

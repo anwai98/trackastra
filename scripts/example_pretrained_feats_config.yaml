@@ -20,6 +20,7 @@ pretrained_feats_additional_props: regionprops_small  # concatenated with SAM2 f
 reduced_pretrained_feat_dim: 128  # FC layer output dim fed to encoder
 pretrained_n_augs: 3  # augmented copies per sequence; increase for larger datasets
 rotate_features: true  # feature disambiguation; recommended with pretrained_feats_aug
+rotate_feature_axes: y  # y|x|both; keep y to finetune the released SAM2 model
 
 # Finetuning from a pretrained SAM2-features model. Use pretrained_model_path instead to
 # start from a local model folder, or remove both to train from scratch, in which case the

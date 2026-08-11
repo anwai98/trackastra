@@ -830,6 +830,7 @@ def train(args):
             pretrained_feats_additional_props=args.pretrained_feats_additional_props,
             pretrained_n_augs=args.pretrained_n_augs,
             rotate_features=args.rotate_features,
+            rotate_feature_axes=args.rotate_feature_axes,
         )
         dummy_config = dict(
             coord_dim=dummy_data.ndim,
@@ -909,6 +910,7 @@ def train(args):
         pretrained_feats_additional_props=args.pretrained_feats_additional_props,
         pretrained_n_augs=args.pretrained_n_augs,
         rotate_features=args.rotate_features,
+        rotate_feature_axes=args.rotate_feature_axes,
     )
     sampler_kwargs = dict(
         batch_size=args.batch_size,
@@ -1222,6 +1224,15 @@ def parse_train_args():
         default=True,
         help="Apply feature disambiguation to pretrained features based on coordinates to"
         " mitigate overfitting and avoid proximity-induced ambiguity in pretrained features",
+    )
+    parser.add_argument(
+        "--rotate_feature_axes",
+        type=str,
+        choices=["y", "x", "both"],
+        default="y",
+        help="Spatial coordinates driving the feature rotation angle. 'y'/'x' use that"
+        " coordinate alone, 'both' alternates between them across feature pairs. Keep 'y'"
+        " to finetune general_2d_w_SAM2_features, which was trained that way",
     )
     parser.add_argument(
         "--disable_all_coords",
